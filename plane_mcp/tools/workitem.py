@@ -181,6 +181,60 @@ def _scoped_pql(pql: str, project_id: str) -> str:
     return f"({pql}) AND {scope}" if pql else scope
 
 
+def _resolve_state_names(client: Any, workspace_slug: str, project_id: str) -> dict[str, str]:
+    """Build a {state_id: state_name} map for one project's workflow states.
+
+    Plane's REST API returns `state` on a workitem as just the state UUID.
+    Callers (agents, dashboards) overwhelmingly want the human-readable name
+    ("Test", "In Progress", "Backlog") for grouping and labelling, so we resolve
+    once per workitem call. Empty on no project_id — workspace-scope lists
+    leave the UUID untouched.
+
+    Failures (transient Plane 5xx, network blip) are swallowed: an empty map
+    means the response keeps the UUID, which is the pre-fix behaviour and
+    strictly worse than nothing — never worse than the old wire shape.
+    """
+    if not project_id:
+        return {}
+    try:
+        resp = client.states.list(workspace_slug=workspace_slug, project_id=project_id, params=None)
+    except Exception:  # noqa: BLE001 - enrichment is best-effort; the call's primary result stands either way
+        logger.warning("state enrichment skipped: client.states.list failed")
+        return {}
+    return {s.id: s.name for s in (getattr(resp, "results", None) or []) if getattr(s, "id", None) and getattr(s, "name", None)}
+
+
+def _project_id_from(item: Any) -> str:
+    """Pull the project UUID out of a workitem's `project` field.
+
+    The SDK types this as `str | dict | None`: the str branch is the bare
+    UUID; the dict branch carries the project shape with an `id` field.
+    Returns "" when neither yields an ID.
+    """
+    project = getattr(item, "project", None)
+    if isinstance(project, str):
+        return project
+    if isinstance(project, dict):
+        return project.get("id") or ""
+    return ""
+
+
+def _enrich_state(items: Any, state_map: dict[str, str]) -> None:
+    """Replace each item's state UUID with its name, in place, where resolvable.
+
+    `items` is the SDK's `PaginatedWorkItemResponse.results` (a list of WorkItem
+    models). `state` on a workitem is typed `str | StateLite | None`; we only
+    touch the `str` UUID-shaped values, leaving None and already-resolved
+    StateLite objects alone.
+    """
+    if not state_map:
+        return
+    for item in items or []:
+        current = getattr(item, "state", None)
+        if isinstance(current, str) and current in state_map:
+            item.state = state_map[current]
+
+
 def register(mcp: FastMCP) -> None:
     @mcp.tool(
         name=NAME,
@@ -309,6 +363,9 @@ def register(mcp: FastMCP) -> None:
                 if failure:
                     return failure
                 raise
+            # Replace each item's state UUID with the project's workflow state
+            # name so callers can group/label by name without a second lookup.
+            _enrich_state(response.results, _resolve_state_names(client, workspace_slug, project_id))
             return envelope(response, opt(fields))
 
         if action == "count":
@@ -347,15 +404,20 @@ def register(mcp: FastMCP) -> None:
                     f"Error: invalid work item identifier {workitem_identifier!r}. "
                     "Expected PROJECT-N, for example ENG-42."
                 )
-            return sparse_dump(
-                client.work_items.retrieve_by_identifier(
-                    workspace_slug=workspace_slug,
-                    project_identifier=head,
-                    issue_identifier=int(sequence),
-                    params=retrieve_params(),
-                ),
-                fields,
+            item = client.work_items.retrieve_by_identifier(
+                workspace_slug=workspace_slug,
+                project_identifier=head,
+                issue_identifier=int(sequence),
+                params=retrieve_params(),
             )
+            # resolve project_id from the response when caller didn't pass it —
+            # retrieve_by_identifier accepts just an identifier, so the response
+            # is the only source of truth for which project's states to load.
+            # `project` is typed `str | dict | None` in the SDK: str case is the
+            # UUID directly; dict case carries the project shape with `id`.
+            resolved_project_id = project_id or _project_id_from(item) or ""
+            _enrich_state([item], _resolve_state_names(client, workspace_slug, resolved_project_id))
+            return sparse_dump(item, fields)
 
         if not project_id:
             return missing(action, "project_id")
@@ -373,15 +435,14 @@ def register(mcp: FastMCP) -> None:
             return missing(action, "workitem_id")
 
         if action == "retrieve":
-            return sparse_dump(
-                client.work_items.retrieve(
-                    workspace_slug=workspace_slug,
-                    project_id=project_id,
-                    work_item_id=workitem_id,
-                    params=retrieve_params(),
-                ),
-                fields,
+            item = client.work_items.retrieve(
+                workspace_slug=workspace_slug,
+                project_id=project_id,
+                work_item_id=workitem_id,
+                params=retrieve_params(),
             )
+            _enrich_state([item], _resolve_state_names(client, workspace_slug, project_id))
+            return sparse_dump(item, fields)
 
         if action == "update":
             return client.work_items.update(

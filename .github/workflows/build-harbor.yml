@@ -4,7 +4,7 @@ name: Build & Push to Harbor
 # registry you control. Runs on tag pushes (v*) and manual dispatch.
 #
 # Required GitHub repository variables / secrets (Settings → Secrets and variables):
-#   HARBOR_REGISTRY        e.g. harbor.example.com        (Actions variable)
+#   HARBOR_REGISTRY        e.g. harbor.example.com       (Actions variable)
 #   HARBOR_PROJECT         e.g. plane                    (Actions variable)
 #   HARBOR_IMAGE_NAME      default plane-mcp-server     (Actions variable)
 #   HARBOR_USERNAME        robot account login          (Actions secret)

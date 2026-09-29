@@ -42,7 +42,14 @@ from plane_mcp.toolkit.mentions import (
     tokenize_mentions,
     unmentionable,
 )
-from plane_mcp.toolkit.paging import dump_results, envelope, pql_failure, workitem_page
+from plane_mcp.toolkit.paging import (
+    dump_results,
+    envelope,
+    pql_failure,
+    resolve_per_page,
+    sparse_dump,
+    workitem_page,
+)
 from plane_mcp.toolkit.runtime import (
     as_params,
     coerce_list,
@@ -81,17 +88,18 @@ __all__ = [
     "missing",
     "needs",
     "one_of",
-    "opt",
-    "rich_text",
     "page_params",
     "plan_gated",
-    "project_mention_error",
     "plan_required",
+    "project_mention_error",
     "project_owns",
     "pql_failure",
     "render_mentions",
     "require",
+    "resolve_per_page",
+    "rich_text",
     "scoped",
+    "sparse_dump",
     "tokenize_mentions",
     "unmentionable",
     "workspace_owns",
