@@ -43,6 +43,8 @@ from plane_mcp.toolkit.mentions import (
     unmentionable,
 )
 from plane_mcp.toolkit.paging import (
+    _enrich_labels,
+    _resolve_label_names,
     dump_results,
     envelope,
     pql_failure,
@@ -82,6 +84,8 @@ __all__ = [
     "coerce_list",
     "dump_results",
     "envelope",
+    "_enrich_labels",
+    "_resolve_label_names",
     "ids_of",
     "mention_user_ids",
     "migration_in_progress",

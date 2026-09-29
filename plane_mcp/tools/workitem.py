@@ -32,6 +32,8 @@ from plane_mcp.client import get_plane_client_context
 from plane_mcp.pql_reference import PQL_FIELD_HINT
 from plane_mcp.toolkit import (
     Action,
+    _enrich_labels,
+    _resolve_label_names,
     build_annotations,
     build_description,
     coerce_list,
@@ -147,6 +149,9 @@ FOOTER = (
     f"priority: {', '.join(PRIORITIES)}.\n"
     "UUID fields (assignees, labels, state, parent, type_id) need UUIDs -- list the relevant "
     "resource first if you only have a name.\n"
+    "On read, every workitem action returns `labels` as a list of `{id, name, color}` objects, "
+    "regardless of which endpoint Plane served it from; resolve names without a second "
+    "`label list` call.\n"
     "description_stripped is plain text and is wrapped into HTML on save; description_html wins "
     "if both are given.\n"
     "To clear a field on update: assignees=[] or labels=[], and start_date=null or "
@@ -209,9 +214,10 @@ def _project_id_from(item: Any) -> str:
 
     The SDK types this as `str | dict | None`: the str branch is the bare
     UUID; the dict branch carries the project shape with an `id` field.
-    Returns "" when neither yields an ID.
+    Returns "" when neither yields an ID. Items may also arrive as dicts
+    (test fixtures); the same access path is honoured.
     """
-    project = getattr(item, "project", None)
+    project = item.get("project") if isinstance(item, dict) else getattr(item, "project", None)
     if isinstance(project, str):
         return project
     if isinstance(project, dict):
@@ -366,6 +372,11 @@ def register(mcp: FastMCP) -> None:
             # Replace each item's state UUID with the project's workflow state
             # name so callers can group/label by name without a second lookup.
             _enrich_state(response.results, _resolve_state_names(client, workspace_slug, project_id))
+            # Normalise `labels[]` to a uniform `{id, name, color}` shape across
+            # every workitem action: list endpoints hand back bare UUIDs,
+            # retrieve endpoints hand back full Label objects, and callers
+            # cannot tell which from the call site.
+            _enrich_labels(response.results, _resolve_label_names(client, workspace_slug, project_id))
             return envelope(response, opt(fields))
 
         if action == "count":
@@ -393,7 +404,12 @@ def register(mcp: FastMCP) -> None:
             # Sparse projection is delegated to Plane API via retrieve_params(fields=fields).
             # Wrapping with sparse_dump would wipe out search results because WorkItemSearch
             # contains an 'issues' list rather than individual item fields at top level.
-            return client.work_items.search(workspace_slug=workspace_slug, query=query, params=retrieve_params())
+            result = client.work_items.search(workspace_slug=workspace_slug, query=query, params=retrieve_params())
+            # Search items are a lightweight projection (WorkItemSearchItem) that
+            # does not carry a `labels` field -- enrichment is a no-op today but
+            # stays safe if Plane widens the projection later.
+            _enrich_labels(getattr(result, "issues", None), {})
+            return result
 
         if action == "retrieve_by_identifier":
             if not workitem_identifier:
@@ -417,6 +433,7 @@ def register(mcp: FastMCP) -> None:
             # UUID directly; dict case carries the project shape with `id`.
             resolved_project_id = project_id or _project_id_from(item) or ""
             _enrich_state([item], _resolve_state_names(client, workspace_slug, resolved_project_id))
+            _enrich_labels([item], _resolve_label_names(client, workspace_slug, resolved_project_id))
             return sparse_dump(item, fields)
 
         if not project_id:
@@ -442,6 +459,7 @@ def register(mcp: FastMCP) -> None:
                 params=retrieve_params(),
             )
             _enrich_state([item], _resolve_state_names(client, workspace_slug, project_id))
+            _enrich_labels([item], _resolve_label_names(client, workspace_slug, project_id))
             return sparse_dump(item, fields)
 
         if action == "update":

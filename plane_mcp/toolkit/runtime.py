@@ -132,7 +132,10 @@ def ids_of(items: Any) -> list[str]:
     """Extract ids from a field that may hold bare id strings or model objects."""
     out: list[str] = []
     for item in items or []:
-        value = item if isinstance(item, str) else getattr(item, "id", None)
+        if isinstance(item, dict):
+            value = item.get("id")
+        else:
+            value = item if isinstance(item, str) else getattr(item, "id", None)
         if value:
             out.append(str(value))
     return out

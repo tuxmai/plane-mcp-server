@@ -93,6 +93,95 @@ def envelope(response: Any, fields: str | None = None) -> dict[str, Any]:
     }
 
 
+def _resolve_label_names(client: Any, workspace_slug: str, project_id: str) -> dict[str, str]:
+    """Build a {label_id: label_name} map for one project's labels.
+
+    Plane's REST API returns `labels[]` on a workitem as bare UUIDs from list
+    endpoints and as expanded Label objects from retrieve endpoints. Callers
+    overwhelmingly want the human-readable name, so we resolve once per workitem
+    call. Empty on no project_id -- workspace-scope lists keep the UUIDs with
+    `name == id`, the cheap fall-back.
+
+    Failures (transient Plane 5xx, network blip) are swallowed: an empty map
+    means the response keeps the UUID with `name == id`, which is the
+    pre-fix shape and strictly worse than nothing -- never worse than the old
+    wire shape, and never lossy on `id`.
+    """
+    if not project_id:
+        return {}
+    try:
+        resp = client.labels.list(workspace_slug=workspace_slug, project_id=project_id, params=None)
+    except Exception:  # noqa: BLE001 - enrichment is best-effort; the call's primary result stands either way
+        logger.warning("label enrichment skipped: client.labels.list failed")
+        return {}
+
+    def _id_name(label: Any) -> tuple[str | None, str | None]:
+        if isinstance(label, dict):
+            return label.get("id"), label.get("name")
+        return getattr(label, "id", None), getattr(label, "name", None)
+
+    return {
+        label_id: label_name
+        for label in (getattr(resp, "results", None) or [])
+        for label_id, label_name in (_id_name(label),)
+        if label_id and label_name
+    }
+
+
+def _enrich_labels(items: Any, label_map: dict[str, str]) -> None:
+    """Normalise each item's `labels` field to a list of `{id, name, color}` objects.
+
+    Plane returns two shapes depending on the endpoint:
+
+    - list / list_archived / search: `["<uuid>", ...]`
+    - retrieve / retrieve_by_identifier: `[{id, name, color, ...}, ...]`
+
+    Callers cannot rely on one type, so we normalise in place:
+
+    - bare UUID strings become `{"id": u, "name": label_map.get(u, u)}`
+    - objects with empty `name` are backfilled from `label_map`
+    - objects with a non-empty `name` are left alone
+    - `None` / missing / non-list values are left alone
+
+    Items may be Pydantic models (the production case) or plain dicts (the
+    envelope-output case after `dump_results`). Both attribute and item access
+    are tried on each label entry.
+    """
+    for item in items or []:
+        if isinstance(item, dict):
+            labels = item.get("labels")
+            target = item
+        else:
+            labels = getattr(item, "labels", None)
+            target = item
+        if not isinstance(labels, list):
+            continue
+        enriched: list[Any] = []
+        for entry in labels:
+            if isinstance(entry, str):
+                enriched.append({"id": entry, "name": label_map.get(entry, entry)})
+                continue
+            if isinstance(entry, dict):
+                obj_id = entry.get("id")
+                obj_name = entry.get("name")
+            else:
+                obj_id = getattr(entry, "id", None)
+                obj_name = getattr(entry, "name", None)
+            if obj_id and not obj_name:
+                backfilled = label_map.get(obj_id, obj_id)
+                if isinstance(entry, dict):
+                    entry["name"] = backfilled
+                else:
+                    entry.name = backfilled
+                enriched.append(entry)
+                continue
+            enriched.append(entry)
+        if isinstance(target, dict):
+            target["labels"] = enriched
+        else:
+            target.labels = enriched
+
+
 def workitem_page(
     tool: str,
     action: str,
@@ -107,6 +196,13 @@ def workitem_page(
     **target: Any,
 ) -> dict[str, Any]:
     """One page of the work items belonging to a parent record."""
+    # `target` carries the SDK kwargs the parent tool already collected
+    # (workspace_slug, project_id, cycle_id / module_id / etc.). The same
+    # bag carries `client`, which we need for label enrichment but the SDK
+    # method itself does not. Pull just that one out.
+    client = target.pop("client", None)
+    workspace_slug = target.get("workspace_slug", "")
+    project_id = target.get("project_id", "")
     try:
         response = method(
             **target,
@@ -124,6 +220,7 @@ def workitem_page(
         if failure is None:
             raise
         return failure
+    _enrich_labels(response.results, _resolve_label_names(client, workspace_slug, project_id))
     return envelope(response, opt(fields))
 
 

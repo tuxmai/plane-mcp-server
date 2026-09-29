@@ -294,7 +294,9 @@ call the matching list tool first:
   assignee   → {members}  then: assignee = "<uuid>"
   createdBy  → {members}  then: createdBy = "<uuid>"
   state      → {states}  then: state = "<uuid>"
-  label      → {labels}  then: label = "<uuid>"
+  label      → {labels}  then: label = "<uuid>"  (workitem responses already
+              return labels as `{id, name, color}` objects, so the UUID is
+              usually on hand — no second `label list` call needed)
   type       → {types}  then: type = "<uuid>"
   cycle      → {cycles}  then: cycle = "<uuid>"
   module     → {modules}  then: module = "<uuid>"
